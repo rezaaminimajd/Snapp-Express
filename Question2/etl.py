@@ -1,8 +1,12 @@
 import os
 import click
+import datetime
+
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-from pyspark.sql.functions import col, struct, when
+from pyspark.sql.types import DateType
+from pyspark.sql.functions import col, regexp_replace, date_format, udf
+
+udf_time_convert = udf(lambda x: time_convert(x), DateType())
 
 
 def init_spark_connection(appname, sparkmaster, minio_url,
@@ -69,24 +73,33 @@ def transform(df, is_tweets):
 def extract_tweets_fields(df):
     add_fields_message = ['id', 'id_str', 'lang']
     add_fields_user = [
-        'name', 'screen_name','location', 'description', 'url', 'protected',
+        'name', 'screen_name', 'location', 'description', 'url', 'protected',
         'followers_count', 'friends_count', 'listed_count', 'created_at', 'favourites_count',
-        'statuses_count',  'profile_image_url_https'
+        'statuses_count', 'profile_image_url_https'
     ]
 
     for field in add_fields_message:
-        print(field)
         df = df.withColumn(field, col(f'message.{field}'))
 
     for field in add_fields_user:
-        print(field)
         df = df.withColumn(field, col(f'message.user.{field}'))
+
+    remove_space_fields = ['description', 'url', 'name', 'location']
+    for field in remove_space_fields:
+        df = df.withColumn(field, regexp_replace(col(field), " ", ""))
 
     remove_fields = ['message', 'kafka_consume_ts']
 
     for field in remove_fields:
         df = df.drop(field)
+
+    df = df.withColumn('created_at', udf_time_convert(col("created_at")))
     return df
+
+
+def time_convert(time):
+    time_format = '%a %b %d %H:%M:%S %z %Y'
+    return datetime.datetime.strptime(time, time_format)
 
 
 def extract_users_fields(df):
