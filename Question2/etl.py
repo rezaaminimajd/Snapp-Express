@@ -1,6 +1,8 @@
 import os
 import click
 from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.functions import col, struct, when
 
 
 def init_spark_connection(appname, sparkmaster, minio_url,
@@ -43,13 +45,11 @@ def extract(sc, bucket_name, raw_data_path):
     Return:
         df: raw dataframe.
     """
-
-    return sc.read.csv('s3a://' + os.path.os.path.join(bucket_name,
-                                                       raw_data_path),
-                       header=True)
+    uri = 's3a://' + os.path.join(bucket_name, raw_data_path)
+    return sc.read.json(uri)
 
 
-def transform(df):
+def transform(df, is_tweets):
     """ Transform dataframe to an acceptable form.
 
     Args:
@@ -58,7 +58,38 @@ def transform(df):
     Return:
         df: processed dataframe
     """
-    # todo: write the your code here
+    if is_tweets:
+        df = extract_tweets_fields(df)
+    else:
+        df = extract_users_fields(df)
+
+    return df
+
+
+def extract_tweets_fields(df):
+    add_fields_message = ['id', 'id_str', 'lang']
+    add_fields_user = [
+        'name', 'screen_name','location', 'description', 'url', 'protected',
+        'followers_count', 'friends_count', 'listed_count', 'created_at', 'favourites_count',
+        'statuses_count',  'profile_image_url_https'
+    ]
+
+    for field in add_fields_message:
+        print(field)
+        df = df.withColumn(field, col(f'message.{field}'))
+
+    for field in add_fields_user:
+        print(field)
+        df = df.withColumn(field, col(f'message.user.{field}'))
+
+    remove_fields = ['message', 'kafka_consume_ts']
+
+    for field in remove_fields:
+        df = df.drop(field)
+    return df
+
+
+def extract_users_fields(df):
     return df
 
 
@@ -75,9 +106,7 @@ def load(df, bucket_name, processed_data_path):
          Nothing!
     """
     # todo: change this function if
-    df.write.csv('s3a://' + os.path.os.path.join(bucket_name,
-                                                 processed_data_path),
-                 header=True)
+    df.write.csv('s3a://' + os.path.join(bucket_name, processed_data_path), header=True)
 
 
 @click.command('ETL job')
@@ -91,10 +120,10 @@ def load(df, bucket_name, processed_data_path):
 @click.option('--bucket_name', default='xxxx')
 @click.option('--raw_data_path', default='xxxx')
 @click.option('--processed_data_path', default='xxxx')
+@click.option('--is_tweets', default=True)
 def main(appname, sparkmaster, minio_url,
          minio_access_key, minio_secret_key,
-         bucket_name, raw_data_path, processed_data_path):
-
+         bucket_name, raw_data_path, processed_data_path, is_tweets):
     sc = init_spark_connection(appname, sparkmaster, minio_url,
                                minio_access_key, minio_secret_key)
 
@@ -102,7 +131,7 @@ def main(appname, sparkmaster, minio_url,
     df = extract(sc, bucket_name, raw_data_path)
 
     # transform data to desired form
-    clean_df = transform(df)
+    clean_df = transform(df, is_tweets)
 
     # load clean data to MINIO
     load(clean_df, bucket_name, processed_data_path)
