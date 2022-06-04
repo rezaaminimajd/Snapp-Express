@@ -53,7 +53,7 @@ def extract(sc, bucket_name, raw_data_path):
     return sc.read.json(uri)
 
 
-def transform(df, is_tweets, sc):
+def transform(df, is_tweets):
     """ Transform dataframe to an acceptable form.
 
     Args:
@@ -64,7 +64,7 @@ def transform(df, is_tweets, sc):
         df: processed dataframe
     """
     if is_tweets:
-        df = transform_tweets(df, sc)
+        df = transform_tweets(df)
     else:
         df = transform_users(df)
 
@@ -104,29 +104,44 @@ def add_missing_columns(df, ref_df):
         if col.name not in df.columns:
             df = df.withColumn(col.name, lit(None).cast(col.dataType))
     df = df.drop('entities')
+    df = df.drop('extended_entities')
+    df = df.drop('user')
+    df = df.drop('metadata')
+    df = df.drop('place')
     return df
 
 
-def transform_tweets(df, sc):
+def transform_tweets(df):
+    print(df.columns)
     df = df.drop('user')
     df = df.select('message')
     df = df.select(explode(array(col('message'))).alias('data')).select('data.*')
-    new = df.filter(col("status.retweeted_status").isNotNull())
-    new = new.select('status.retweeted_status')
-    new = new.select(explode(array(col('retweeted_status'))).alias('data')).select('data.*')
-    new = add_missing_columns(new, df)
-    df = add_missing_columns(df, new)
-    df.unionByName(new)
+    rs_df = expand_column(df, 'retweeted_status')
+    qs_df = expand_column(df, 'quoted_status')
+    rs_df = add_missing_columns(rs_df, df)
+    df = add_missing_columns(df, rs_df)
+    df = df.unionByName(rs_df)
+    qs_df = add_missing_columns(qs_df, df)
+    df = add_missing_columns(df, qs_df)
+    df = df.unionByName(qs_df)
+
     df = df.dropDuplicates(['id'])
     df = df.withColumn('created_at', udf_time_convert(col("created_at")))
     columns = [item[0] for item in df.dtypes if item[1].startswith('string')]
     for column in columns:
         df = df.withColumn(column, regexp_replace(col(column), " ", ""))
-    array_cols = ['status', 'friends_dic', 'followers_dic', 'place', 'extended_entities']
+    array_cols = ['retweeted_status', 'user', 'quoted_status', 'place', 'metadata', 'extended_entities']
     for c in array_cols:
         df = df.drop(c)
     df = df.repartition('created_at')
     return df
+
+
+def expand_column(df, col_name):
+    new = df.filter(col(col_name).isNotNull())
+    new = new.select(col_name)
+    new = new.select(explode(array(col(col_name))).alias('data')).select('data.*')
+    return new
 
 
 def load(df, bucket_name, processed_data_path):
@@ -141,7 +156,7 @@ def load(df, bucket_name, processed_data_path):
     Returns:
          Nothing!
     """
-    # todo: change this function if
+
     df.write.partitionBy("created_at") \
         .mode("overwrite").csv('s3a://' + os.path.join(bucket_name, processed_data_path), header=True)
 
@@ -173,7 +188,7 @@ def main(appname, sparkmaster, minio_url,
     df = extract(sc, bucket_name, raw_data_path)
 
     # transform data to desired form
-    clean_df = transform(df, is_tweets, sc)
+    clean_df = transform(df, is_tweets)
 
     # load clean data to MINIO
     load(clean_df, bucket_name, processed_data_path)
